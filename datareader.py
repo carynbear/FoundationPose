@@ -417,8 +417,8 @@ class LinemodReader(LinemodOcclusionReader):
   def get_gt_mesh_file(self, ob_id):
     root = self.base_dir
     while 1:
-      if os.path.exists(f'{root}/lm_models'):
-        mesh_dir = f'{root}/lm_models/models/obj_{ob_id:06d}.ply'
+      if os.path.exists(f'{root}/models'):
+        mesh_dir = f'{root}/models/obj_{ob_id:06d}.ply'
         break
       else:
         root = os.path.abspath(f'{root}/../')

@@ -47,13 +47,20 @@ def get_mask(reader, i_frame, ob_id, detect_type):
   return valid
 
 
-
 def run_pose_estimation_worker(reader, i_frames, est:FoundationPose=None, debug=0, ob_id=None, device='cuda:0'):
   torch.cuda.set_device(device)
   est.to_device(device)
   est.glctx = dr.RasterizeCudaContext(device=device)
 
   result = NestDict()
+
+ # add code here, to get mesh
+  mesh_file = reader.get_gt_mesh_file(ob_id)
+  mesh = trimesh.load(mesh_file)
+  # change mesh unit to meter
+  mesh.vertices = mesh.vertices/1000
+  to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+  bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
 
   for i, i_frame in enumerate(i_frames):
     logging.info(f"{i}/{len(i_frames)}, i_frame:{i_frame}, ob_id:{ob_id}")
@@ -82,14 +89,20 @@ def run_pose_estimation_worker(reader, i_frames, est:FoundationPose=None, debug=
       tmp.apply_transform(pose)
       tmp.export(f'{debug_dir}/model_tf.obj')
 
+    # add code here, visulization
+    center_pose = pose@np.linalg.inv(to_origin)
+    vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
+    vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K, thickness=2, transparency=0, is_input_rgb=True)
+    cv2.imshow('1', vis[...,::-1])
+    cv2.waitKey(1)
+
     result[video_id][id_str][ob_id] = pose
 
   return result
 
-
 def run_pose_estimation():
   wp.force_load(device='cuda')
-  reader_tmp = LinemodReader(f'{opt.linemod_dir}/lm_test_all/test/000002', split=None)
+  reader_tmp = LinemodReader(f'{opt.linemod_dir}/test/000002', split=None)
 
   debug = opt.debug
   use_reconstructed_mesh = opt.use_reconstructed_mesh
@@ -110,7 +123,7 @@ def run_pose_estimation():
 
     args = []
 
-    video_dir = f'{opt.linemod_dir}/lm_test_all/test/{ob_id:06d}'
+    video_dir = f'{opt.linemod_dir}/test/{ob_id:06d}'
     reader = LinemodReader(video_dir, split=None)
     video_id = reader.get_video_id()
     est.reset_object(model_pts=mesh.vertices.copy(), model_normals=mesh.vertex_normals.copy(), symmetry_tfs=symmetry_tfs, mesh=mesh)
@@ -136,9 +149,9 @@ def run_pose_estimation():
 if __name__=='__main__':
   parser = argparse.ArgumentParser()
   code_dir = os.path.dirname(os.path.realpath(__file__))
-  parser.add_argument('--linemod_dir', type=str, default="/mnt/9a72c439-d0a7-45e8-8d20-d7a235d02763/DATASET/LINEMOD", help="linemod root dir")
+  parser.add_argument('--linemod_dir', type=str, default=f"{code_dir}/demo_data/lm", help="linemod root dir")
   parser.add_argument('--use_reconstructed_mesh', type=int, default=0)
-  parser.add_argument('--ref_view_dir', type=str, default="/mnt/9a72c439-d0a7-45e8-8d20-d7a235d02763/DATASET/YCB_Video/bowen_addon/ref_views_16")
+  parser.add_argument('--ref_view_dir', type=str, default=f"{code_dir}/demo_data/lm/ref_views")
   parser.add_argument('--debug', type=int, default=0)
   parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
   opt = parser.parse_args()
