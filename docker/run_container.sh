@@ -1,6 +1,6 @@
 docker rm -f foundationpose
 DIR=$(pwd)/../
-xhost local:1000 + && \
+xhost local:1000 +
 docker run \
     --name foundationpose  \
     --gpus all \
