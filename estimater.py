@@ -16,7 +16,32 @@ import yaml
 
 
 class FoundationPose:
-  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/'):
+  """  
+  A class for estimating the pose of a 3D object in a scene.
+  """
+  def __init__(self, 
+               model_pts, 
+               model_normals, 
+               symmetry_tfs=None, 
+               mesh=None, 
+               scorer:ScorePredictor=None, 
+               refiner:PoseRefinePredictor=None, 
+               glctx=None, 
+               debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/'):
+    """I
+
+    Args:
+      model_pts (np.ndarray): The 3D points of the object model.
+      model_normals (np.ndarray): The normals of the object model.
+      symmetry_tfs (np.ndarray, optional): The symmetry transformations of the object model. Defaults to None.
+      mesh (trimesh.Trimesh, optional): The object mesh. Defaults to None.
+      scorer (ScorePredictor, optional): The score predictor for pose refinement. Defaults to None.
+      refiner (PoseRefinePredictor, optional): The pose refiner for pose refinement. Defaults to None.
+      glctx (dr.RasterizeCudaContext, optional): The rendering context for rendering synthetic views. Defaults to None.
+      debug (int, optional): The debug level. Defaults to 0.
+      debug_dir (str, optional): The directory for saving debug information. Defaults to '/home/bowen/debug/novel_pose_debug/'.
+  """
+
     self.gt_pose = None
     self.ignore_normal_flip = True
     self.debug = debug
@@ -24,6 +49,8 @@ class FoundationPose:
     os.makedirs(debug_dir, exist_ok=True)
 
     self.reset_object(model_pts, model_normals, symmetry_tfs=symmetry_tfs, mesh=mesh)
+
+    # Pose Initialization: Rotations uniformly sampled from isosphere centered on object with camera facing center
     self.make_rotation_grid(min_n_views=40, inplane_step=60)
 
     self.glctx = glctx
@@ -41,16 +68,37 @@ class FoundationPose:
     self.pose_last = None   # Used for tracking; per the centered mesh
 
 
-  def reset_object(self, model_pts, model_normals, symmetry_tfs=None, mesh=None):
+  def reset_object(
+      self, 
+      model_pts: np.ndarray, 
+      model_normals: np.ndarray, 
+      symmetry_tfs: np.ndarray = None, 
+      mesh: trimesh.Trimesh = None):
+
+    """
+    Resets the object model and its properties.
+
+    Args:
+        model_pts (np.ndarray): The 3D points of the object model. (i.e. mesh.vertices.copy())
+        model_normals (np.ndarray): The normals of the object model. (i.e. mesh.vertex_normals.copy())
+        symmetry_tfs (np.ndarray, optional): The symmetry transformations of the object model. Defaults to None.
+        mesh (trimesh.Trimesh, optional): The object mesh. Defaults to None.
+    """
+    # find geometric center of object
     max_xyz = mesh.vertices.max(axis=0)
     min_xyz = mesh.vertices.min(axis=0)
     self.model_center = (min_xyz+max_xyz)/2
+    
+    # center the mesh origin to its geometric center
     if mesh is not None:
       self.mesh_ori = mesh.copy()
       mesh = mesh.copy()
       mesh.vertices = mesh.vertices - self.model_center.reshape(1,3)
 
     model_pts = mesh.vertices
+
+    # Determine the voxel size for downsampling the object point cloud
+    # Based on the object's "size" (diameter)
     self.diameter = compute_mesh_diameter(model_pts=mesh.vertices, n_sample=10000)
     self.vox_size = max(self.diameter/20.0, 0.003)
     logging.info(f'self.diameter:{self.diameter}, vox_size:{self.vox_size}')
@@ -58,11 +106,15 @@ class FoundationPose:
     self.angle_bin = 20  # Deg
     pcd = toOpen3dCloud(model_pts, normals=model_normals)
     pcd = pcd.voxel_down_sample(self.vox_size)
+
+    # Set object bounds, points, and normals after centering and downsampling
     self.max_xyz = np.asarray(pcd.points).max(axis=0)
     self.min_xyz = np.asarray(pcd.points).min(axis=0)
     self.pts = torch.tensor(np.asarray(pcd.points), dtype=torch.float32, device='cuda')
     self.normals = F.normalize(torch.tensor(np.asarray(pcd.normals), dtype=torch.float32, device='cuda'), dim=-1)
     logging.info(f'self.pts:{self.pts.shape}')
+    
+    # Save the centered mesh and make tensors
     self.mesh_path = None
     self.mesh = mesh
     if self.mesh is not None:
@@ -80,12 +132,24 @@ class FoundationPose:
 
 
   def get_tf_to_centered_mesh(self):
+    """
+    Returns the transformation matrix to center the object mesh.
+
+    Returns:
+        torch.Tensor: The transformation matrix.
+    """
     tf_to_center = torch.eye(4, dtype=torch.float, device='cuda')
     tf_to_center[:3,3] = -torch.as_tensor(self.model_center, device='cuda', dtype=torch.float)
     return tf_to_center
 
 
-  def to_device(self, s='cuda:0'):
+  def to_device(self, s: str = 'cuda:0'):
+    """
+    Moves all tensors and modules to the specified device.
+
+    Args:
+        s (str, optional): The device to move to. Defaults to 'cuda:0'.
+    """
     for k in self.__dict__:
       self.__dict__[k] = self.__dict__[k]
       if torch.is_tensor(self.__dict__[k]) or isinstance(self.__dict__[k], nn.Module):
@@ -102,8 +166,18 @@ class FoundationPose:
       self.glctx = dr.RasterizeCudaContext(s)
 
 
+  def make_rotation_grid(
+      self, 
+      min_n_views: int = 40, 
+      inplane_step: int = 60):
+    """
+    Creates a grid of rotation matrices for sampling object poses.
+    Uniformly sample N_s viewpoints from an isosphere centered on the object with the camera facing the center.
 
-  def make_rotation_grid(self, min_n_views=40, inplane_step=60):
+    Args:
+        min_n_views (int, optional): The minimum number of views to sample. Defaults to 40.
+        inplane_step (int, optional): The step size for in-plane rotations. Defaults to 60.
+    """
     cam_in_obs = sample_views_icosphere(n_views=min_n_views)
     logging.info(f'cam_in_obs:{cam_in_obs.shape}')
     rot_grid = []
@@ -124,17 +198,50 @@ class FoundationPose:
     logging.info(f"self.rot_grid: {self.rot_grid.shape}")
 
 
-  def generate_random_pose_hypo(self, K, rgb, depth, mask, scene_pts=None):
-    '''
-    @scene_pts: torch tensor (N,3)
-    '''
+  def generate_random_pose_hypo(
+      self, 
+      K: np.ndarray, 
+      rgb: np.ndarray, 
+      depth: np.ndarray, 
+      mask: np.ndarray, 
+      scene_pts: torch.Tensor = None) -> torch.Tensor:
+    """
+    Generates random pose hypotheses for the object.
+
+    Args:
+        K (np.ndarray): The camera intrinsics matrix.
+        rgb (np.ndarray): The RGB image.
+        depth (np.ndarray): The depth image.
+        mask (np.ndarray): The object mask.
+        scene_pts (torch.Tensor[N,3], optional): The 3D points of the scene. Defaults to None.
+
+    Returns:
+        torch.Tensor: The pose hypotheses.
+    """
     ob_in_cams = self.rot_grid.clone()
     center = self.guess_translation(depth=depth, mask=mask, K=K)
     ob_in_cams[:,:3,3] = torch.tensor(center, device='cuda', dtype=torch.float).reshape(1,3)
     return ob_in_cams
 
 
-  def guess_translation(self, depth, mask, K):
+  def guess_translation(
+      self, 
+      depth: np.ndarray, 
+      mask: np.ndarray, 
+      K: np.ndarray) -> np.ndarray:
+
+    """
+    Guesses the translation of the object based on the depth and mask.
+    Initialize the translation using the 3d point located at the median depth with the detected 2D bounding box.
+
+    Args:
+        depth (np.ndarray): The depth image.
+        mask (np.ndarray): The object mask.
+        K (np.ndarray): The camera intrinsics matrix.
+
+    Returns:
+        np.ndarray: The guessed translation.
+    """
     vs,us = np.where(mask>0)
     if len(us)==0:
       logging.info(f'mask is all zero')
@@ -156,13 +263,37 @@ class FoundationPose:
     return center.reshape(3)
 
 
-  def register(self, K, rgb, depth, ob_mask, ob_id=None, glctx=None, iteration=5):
-    '''Copmute pose from given pts to self.pcd
-    @pts: (N,3) np array, downsampled scene points
-    '''
+  def register(
+      self, 
+      K: np.ndarray, 
+      rgb: np.ndarray, 
+      depth: np.ndarray, 
+      ob_mask: np.ndarray, 
+      ob_id: tuple = None, 
+      glctx: dr.RasterizeCudaContext = None, 
+      iteration: int = 5) -> np.ndarray:
+
+    """
+    Registers the object pose in the scene. Compute pose from given pts to self.pcd
+
+    Note: @pts: (N,3) np array, downsampled scene points
+
+    Args:
+        K (np.ndarray): The camera intrinsics matrix.
+        rgb (np.ndarray): The RGB image.
+        depth (np.ndarray): The depth image.
+        ob_mask (np.ndarray): The object mask.
+        ob_id (tuple, optional): The object ID. Defaults to None.
+        glctx (dr.RasterizeCudaContext, optional): The rendering context. Defaults to None.
+        iteration (int, optional): The number of refinement iterations. Defaults to 5.
+
+    Returns:
+        np.ndarray: The estimated object pose.
+    """
     set_seed(0)
     logging.info('Welcome')
-
+    
+    # Get or create the rendering context
     if self.glctx is None:
       if glctx is None:
         self.glctx = dr.RasterizeCudaContext()
@@ -170,9 +301,9 @@ class FoundationPose:
       else:
         self.glctx = glctx
 
+    # Process the depth map
     depth = erode_depth(depth, radius=2, device='cuda')
     depth = bilateral_filter_depth(depth, radius=2, device='cuda')
-
     if self.debug>=2:
       xyz_map = depth2xyzmap(depth, K)
       valid = xyz_map[...,2]>=0.1
@@ -180,44 +311,73 @@ class FoundationPose:
       o3d.io.write_point_cloud(f'{self.debug_dir}/scene_raw.ply',pcd)
       cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
 
+    # Check that there is depth detected where the object is detected
+    # Return dummy pose if not enough valid values
     normal_map = None
-    valid = (depth>=0.1) & (ob_mask>0)
-    if valid.sum()<4:
+    valid = (depth>=0.1) & (ob_mask>0) 
+    if valid.sum()<4: 
       logging.info(f'valid too small, return')
       pose = np.eye(4)
       pose[:3,3] = self.guess_translation(depth=depth, mask=ob_mask, K=K)
       return pose
-
+    
     if self.debug>=2:
       imageio.imwrite(f'{self.debug_dir}/color.png', rgb)
       cv2.imwrite(f'{self.debug_dir}/depth.png', (depth*1000).astype(np.uint16))
       valid = xyz_map[...,2]>=0.1
       pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
       o3d.io.write_point_cloud(f'{self.debug_dir}/scene_complete.ply',pcd)
-
+    
     self.H, self.W = depth.shape[:2]
     self.K = K
     self.ob_id = ob_id
     self.ob_mask = ob_mask
 
+    # Generate pose initializations
     poses = self.generate_random_pose_hypo(K=K, rgb=rgb, depth=depth, mask=ob_mask, scene_pts=None)
     poses = poses.data.cpu().numpy()
     logging.info(f'poses:{poses.shape}')
+    #below is weird... isn't this already done in generate_random_pose_hypo?
     center = self.guess_translation(depth=depth, mask=ob_mask, K=K)
-
     poses = torch.as_tensor(poses, device='cuda', dtype=torch.float)
-    poses[:,:3,3] = torch.as_tensor(center.reshape(1,3), device='cuda')
-
+    poses[:,:3,3] = torch.as_tensor(center.reshape(1,3), device='cuda') 
+    
     add_errs = self.compute_add_err_to_gt_pose(poses)
     logging.info(f"after viewpoint, add_errs min:{add_errs.min()}")
 
     xyz_map = depth2xyzmap(depth, K)
-    poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
-    if vis is not None:
-      imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
 
-    scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2)
-    if vis is not None:
+    #Pose Refinement
+    poses, vis = self.refiner.predict(mesh=self.mesh, 
+                                      mesh_tensors=self.mesh_tensors, 
+                                      rgb=rgb, 
+                                      depth=depth, 
+                                      K=K, 
+                                      ob_in_cams=poses.data.cpu().numpy(),
+                                      normal_map=normal_map, 
+                                      xyz_map=xyz_map, #difference!
+                                      glctx=self.glctx, 
+                                      mesh_diameter=self.diameter, 
+                                      iteration=iteration, 
+                                      get_vis=self.debug>=2
+                                      )
+    if vis is not None: #save debug image
+      imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
+    
+    #Pose Ranking
+    scores, vis = self.scorer.predict(mesh=self.mesh, 
+                                      rgb=rgb, 
+                                      depth=depth, 
+                                      K=K, 
+                                      ob_in_cams=poses.data.cpu().numpy(), 
+                                      normal_map=normal_map, 
+                                      xyz_map=xyz_map, #ADDED
+                                      mesh_tensors=self.mesh_tensors, 
+                                      glctx=self.glctx, 
+                                      mesh_diameter=self.diameter, 
+                                      get_vis=self.debug>=2)
+    
+    if vis is not None: #save debug image
       imageio.imwrite(f'{self.debug_dir}/vis_score.png', vis)
 
     add_errs = self.compute_add_err_to_gt_pose(poses)
