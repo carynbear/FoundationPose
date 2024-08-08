@@ -20,8 +20,8 @@ class FoundationPose:
   A class for estimating the pose of a 3D object in a scene.
   """
   def __init__(self, 
-               model_pts, 
-               model_normals, 
+               model_pts=None, 
+               model_normals=None, 
                symmetry_tfs=None, 
                mesh=None, 
                scorer:ScorePredictor=None, 
@@ -48,10 +48,11 @@ class FoundationPose:
     self.debug_dir = debug_dir
     os.makedirs(debug_dir, exist_ok=True)
 
-    self.reset_object(model_pts, model_normals, symmetry_tfs=symmetry_tfs, mesh=mesh)
+    if not( model_pts is None or model_normals is None and mesh is None ):
+      self.reset_object(model_pts, model_normals, symmetry_tfs=symmetry_tfs, mesh=mesh)
 
     # Pose Initialization: Rotations uniformly sampled from isosphere centered on object with camera facing center
-    self.make_rotation_grid(min_n_views=40, inplane_step=60)
+    
 
     self.glctx = glctx
 
@@ -127,6 +128,7 @@ class FoundationPose:
     else:
       self.symmetry_tfs = torch.as_tensor(symmetry_tfs, device='cuda', dtype=torch.float)
 
+    self.make_rotation_grid(min_n_views=40, inplane_step=60)
     logging.info("reset done")
 
 
@@ -427,4 +429,35 @@ class FoundationPose:
     self.pose_last = pose
     return (pose@self.get_tf_to_centered_mesh()).data.cpu().numpy().reshape(4,4)
 
+  def refine_only(self, pose, rgb, depth, K, iterations=10):
+    pose = pose@np.linalg.inv(self.get_tf_to_centered_mesh().data.cpu().numpy())
+    pose = torch.as_tensor(pose, device='cuda', dtype=torch.float)
+    logging.info("Welcome")
 
+    
+    depth = erode_depth(depth, radius=2, device='cuda')
+    depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+    logging.info("depth processing done")
+
+    xyz_map = depth2xyzmap(depth, K)
+    depth = torch.as_tensor(depth, device='cuda', dtype=torch.float)
+
+    pose, vis, runtimes = self.refiner.predict(
+      mesh=self.mesh, 
+      mesh_tensors=self.mesh_tensors, 
+      rgb=rgb, 
+      depth=depth, 
+      K=K, 
+      ob_in_cams=pose.reshape(1,4,4), 
+      normal_map=None, 
+      xyz_map=xyz_map, 
+      mesh_diameter=self.diameter, 
+      glctx=self.glctx, 
+      iteration=iterations, 
+      get_vis=self.debug>=2)
+    
+    if vis is not None: #save debug image
+      imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
+    
+    logging.info("pose done")
+    return (pose@self.get_tf_to_centered_mesh()).data.cpu().numpy().reshape(4,4), runtimes

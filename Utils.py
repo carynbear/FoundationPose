@@ -103,7 +103,7 @@ set_logging_format()
 
 def make_mesh_tensors(mesh, device='cuda', max_tex_size=None):
   mesh_tensors = {}
-  if isinstance(mesh.visual, trimesh.visual.texture.TextureVisuals):
+  if isinstance(mesh.visual, trimesh.visual.texture.TextureVisuals) and isinstance(mesh.visual.material, trimesh.visual.material.SimpleMaterial):
     img = np.array(mesh.visual.material.image.convert('RGB'))
     img = img[...,:3]
     if max_tex_size is not None:
@@ -117,10 +117,13 @@ def make_mesh_tensors(mesh, device='cuda', max_tex_size=None):
     uv[:,1] = 1 - uv[:,1]
     mesh_tensors['uv']  = uv
   else:
-    if mesh.visual.vertex_colors is None:
+    try:
+      mesh_tensors['vertex_color'] = torch.as_tensor(mesh.visual.vertex_colors[...,:3], device=device, dtype=torch.float)/255.0
+    except:
       logging.info(f"WARN: mesh doesn't have vertex_colors, assigning a pure color")
-      mesh.visual.vertex_colors = np.tile(np.array([128,128,128]).reshape(1,3), (len(mesh.vertices), 1))
-    mesh_tensors['vertex_color'] = torch.as_tensor(mesh.visual.vertex_colors[...,:3], device=device, dtype=torch.float)/255.0
+      vertex_colors = np.tile(np.array([128,128,128]).reshape(1,3), (len(mesh.vertices), 1))
+      mesh_tensors['vertex_color'] = torch.as_tensor(vertex_colors[...,:3], device=device, dtype=torch.float)/255.0
+    
 
   mesh_tensors.update({
     'pos': torch.tensor(mesh.vertices, device=device, dtype=torch.float),
@@ -994,8 +997,13 @@ class OctreeManager:
 
 
 def make_yaml_dumpable(D):
+  logging.debug(D)
   if isinstance(D, np.ndarray):
     return D.tolist()
+  if isinstance(D, list):
+    return D
+  if isinstance(D, float):
+    return D
   for d in D:
     if isinstance(D[d], dict) or isinstance(D[d], OrderedDict) or isinstance(D[d], defaultdict):
       D[d] = dict(D[d])

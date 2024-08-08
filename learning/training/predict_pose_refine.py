@@ -179,6 +179,9 @@ class PoseRefinePredictor:
     if not isinstance(trans_normalizer, float):
       trans_normalizer = torch.as_tensor(list(trans_normalizer), device='cuda', dtype=torch.float).reshape(1,3)
 
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    runtimes = []
     for _ in range(iteration):
       logging.info("making cropped data")
       pose_data = make_crop_data_batch(self.cfg.input_resize, B_in_cams, mesh_centered, rgb_tensor, depth_tensor, K, crop_ratio=crop_ratio, normal_map=normal_map, xyz_map=xyz_map_tensor, cfg=self.cfg, glctx=glctx, mesh_tensors=mesh_tensors, dataset=self.dataset, mesh_diameter=mesh_diameter)
@@ -187,10 +190,15 @@ class PoseRefinePredictor:
         A = torch.cat([pose_data.rgbAs[b:b+bs].cuda(), pose_data.xyz_mapAs[b:b+bs].cuda()], dim=1).float()
         B = torch.cat([pose_data.rgbBs[b:b+bs].cuda(), pose_data.xyz_mapBs[b:b+bs].cuda()], dim=1).float()
         logging.info("forward start")
+        start.record()
         with torch.cuda.amp.autocast(enabled=self.amp):
           output = self.model(A,B)
         for k in output:
           output[k] = output[k].float()
+        end.record()
+        torch.cuda.synchronize()
+        elapsed = start.elapsed_time(end)
+        runtimes.append(elapsed)
         logging.info("forward done")
         if self.cfg['trans_rep']=='tracknet':
           if not self.cfg['normalize_xyz']:
@@ -237,7 +245,8 @@ class PoseRefinePredictor:
     torch.cuda.empty_cache()
     self.last_trans_update = trans_delta
     self.last_rot_update = rot_mat_delta
-
+    
+    logging.debug(f"Runtimes: {runtimes}")
     if get_vis:
       logging.info("get_vis...")
       canvas = []
@@ -290,7 +299,7 @@ class PoseRefinePredictor:
       canvas_refined = make_grid_image(canvas_refined, nrow=1, padding=padding, pad_value=255)
       canvas = make_grid_image([canvas, canvas_refined], nrow=2, padding=padding, pad_value=255)
       torch.cuda.empty_cache()
-      return B_in_cams_out, canvas
+      return B_in_cams_out, canvas, runtimes
 
-    return B_in_cams_out, None
+    return B_in_cams_out, None, runtimes
 
