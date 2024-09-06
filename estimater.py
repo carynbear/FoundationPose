@@ -350,7 +350,8 @@ class FoundationPose:
     xyz_map = depth2xyzmap(depth, K)
 
     #Pose Refinement
-    poses, vis = self.refiner.predict(mesh=self.mesh, 
+    
+    poses, vis, runtimes = self.refiner.predict(mesh=self.mesh, 
                                       mesh_tensors=self.mesh_tensors, 
                                       rgb=rgb, 
                                       depth=depth, 
