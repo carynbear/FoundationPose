@@ -1,8 +1,9 @@
-docker rm -f foundationpose
-DIR=$(pwd)/../
-xhost local:1000 +
-docker run \
-    --name foundationpose  \
+docker rm -f foundationpose_realsense
+DIR=$(pwd)/
+xhost +  
+&& docker run \
+    --name foundationpose_realsense \
+    --privileged \
     --gpus all \
     --env NVIDIA_DISABLE_REQUIRE=1 \
     -it \
@@ -10,11 +11,12 @@ docker run \
     --security-opt seccomp=unconfined \
     -v $DIR:$DIR \
     -v /home:/home \
-    -v /mnt:/mnt  \
-    -v /tmp:/tmp  \
+    -v /mnt:/mnt \
+    -v /tmp:/tmp \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
-    -v $HOME/.Xauthority:/root/.Xauthority:rw \
+    -v /dev/bus/usb:/dev/bus/usb \
     --network=host \
     --ipc=host \
     -e DISPLAY=${DISPLAY} \
-    -e GIT_INDEX_FILE foundationpose:latest bash -c "cd $DIR && bash"
+    -e GIT_INDEX_FILE \
+    foundationpose:live bash -c "cd $DIR && bash"
