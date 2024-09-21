@@ -63,6 +63,7 @@ def create_mask():
     finally:
         # Stop streaming
         pipeline.stop()
+        return mask_path
 
 if __name__ == "__main__":
     mask_file_path = create_mask()

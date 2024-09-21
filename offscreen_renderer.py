@@ -37,7 +37,7 @@ class ModelRendererOffscreen:
     @window_sizes: H,W
     '''
     self.K = cam_K
-    self.scene = pyrender.Scene(ambient_light=[1., 1., 1.],bg_color=[0,0,0])
+    self.scene = pyrender.Scene(ambient_light=[1., 1., 1.],bg_color=[0,0,0,0])
     self.camera = pyrender.IntrinsicsCamera(fx=cam_K[0,0],fy=cam_K[1,1],cx=cam_K[0,2],cy=cam_K[1,2],znear=0.001,zfar=zfar)
     self.cam_node = self.scene.add(self.camera, pose=np.eye(4), name='cam')
     self.mesh_nodes = []
@@ -72,7 +72,7 @@ class ModelRendererOffscreen:
       mesh.apply_transform(cvcam_in_glcam@ob_in_cvcam)
       mesh = pyrender.Mesh.from_trimesh(mesh, smooth=False)
       mesh_node = self.scene.add(mesh, pose=np.eye(4), name='ob') # Object pose parent is cam
-    color, depth = self.r.render(self.scene)  # depth: float
+    color, depth = self.r.render(self.scene, flags=pyrender.RenderFlags.RGBA)  # depth: float
     if mesh is not None:
       self.scene.remove_node(mesh_node)
 

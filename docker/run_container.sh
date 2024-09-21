@@ -1,8 +1,8 @@
-docker rm -f foundationpose_realsense
+docker rm -f foundationpose
 DIR=$(pwd)/
 xhost +  
-&& docker run \
-    --name foundationpose_realsense \
+docker run \
+    --name foundationpose \
     --privileged \
     --gpus all \
     --env NVIDIA_DISABLE_REQUIRE=1 \

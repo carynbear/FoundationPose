@@ -1,7 +1,7 @@
 ```
   cd docker/
   #build from scratch
-  docker build --network host -t foundationpose .
+  docker build --network host -t foundationpose:live .
   bash docker/run_container.sh
 ```
 
